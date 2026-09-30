@@ -14,8 +14,8 @@ Dois problemas que esta extensão resolve:
    isso passamos o diretório explicitamente com `--working-directory=`. Para outros
    terminais caímos na função oficial (que usa cwd=), que basta.
 
-A pasta atual é rastreada por `get_background_items`, chamado pelo Nautilus a cada
-navegação. Instalado em ~/.local/share/ para sobreviver a updates do pacote oficial.
+A pasta é lida da aba ativa da janela onde o F4 foi apertado (`active-slot` → `location`);
+`get_background_items` (chamado a cada navegação) só rastreia um fallback global. Instalado em ~/.local/share/ para sobreviver a updates do pacote oficial.
 """
 
 import importlib.util
@@ -114,19 +114,33 @@ class OpenTerminalF4(GObject.GObject, Nautilus.MenuProvider):
         controller.connect("key-pressed", self._on_key_pressed)
         window.add_controller(controller)
 
-    def _on_key_pressed(self, _controller, keyval, _keycode, _state):
+    def _on_key_pressed(self, controller, keyval, _keycode, _state):
         if keyval != Gdk.KEY_F4:
             return False
-        self._open_terminal()
+        self._open_terminal(self._window_location(controller.get_widget()))
         return True
 
-    def _open_terminal(self):
+    def _window_location(self, window):
+        """Pasta da aba ativa DESTA janela (propriedades `active-slot` → `location` do
+        Nautilus). `previous_cwd` é global — com várias janelas guarda a última navegada em
+        qualquer uma delas, e trocar de janela/aba não o atualiza. Fica só como fallback."""
+        try:
+            location = window.get_property("active-slot").get_property("location")
+        except (TypeError, AttributeError):
+            location = None
+        if location is None:
+            return self.previous_cwd
+        if location.get_uri_scheme() in REMOTE_URI_SCHEME:
+            return location.get_uri()
+        return location.get_path() or self.previous_cwd
+
+    def _open_terminal(self, cwd):
         remote = self._gsettings is not None and self._gsettings.get_boolean(GSETTINGS_BIND_REMOTE)
         terminal = self._gsettings.get_string(GSETTINGS_TERMINAL) if self._gsettings else "ghostty"
 
         # ghostty é single-instance: precisa do diretório explícito, senão herda o da instância viva.
         if not remote and terminal == "ghostty":
-            path = _to_path(self.previous_cwd)
+            path = _to_path(cwd)
             Popen(["ghostty", f"--working-directory={path}"], cwd=path)  # noqa: S603
             return
 
@@ -134,6 +148,6 @@ class OpenTerminalF4(GObject.GObject, Nautilus.MenuProvider):
             print("[open_terminal_f4] módulo oficial indisponível; não é possível abrir o terminal.")
             return
         if remote:
-            _oat.open_remote_terminal_in_uri(self.previous_cwd)
+            _oat.open_remote_terminal_in_uri(cwd)
         else:
-            _oat.open_local_terminal_in_uri(self.previous_cwd)
+            _oat.open_local_terminal_in_uri(cwd)
